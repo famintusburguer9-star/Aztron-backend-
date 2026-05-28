@@ -8,65 +8,90 @@ const wss = new WebSocketServer({ server });
 
 app.use(express.json());
 
-// Versão simplificada (sem Orchestrator)
-let engineRunning = false;
-let currentMode = 'PAPER';
-let currentExchange = 'BYBIT';
+// Importar o Orchestrator (que vai inicializar todos os serviços)
+const { Orchestrator } = require('./Orchestrator');
+
+// Inicializar o Orchestrator
+const orchestrator = new Orchestrator(wss);
+orchestrator.start();
 
 // ========== ROTAS DA API ==========
 
+// Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() });
 });
 
+// Status do sistema
 app.get('/api/status', (req, res) => {
-  res.json({
-    isRunning: engineRunning,
-    mode: currentMode,
-    exchange: currentExchange,
-    config: { mode: currentMode, exchange: currentExchange }
-  });
+  res.json(orchestrator.getStatus());
 });
 
+// Iniciar o motor
 app.post('/api/aztron/start', (req, res) => {
-  engineRunning = true;
-  console.log('Engine started');
+  orchestrator.startEngine();
   res.json({ success: true, message: 'Engine started' });
 });
 
+// Parar o motor
 app.post('/api/aztron/stop', (req, res) => {
-  engineRunning = false;
-  console.log('Engine stopped');
+  orchestrator.stopEngine();
   res.json({ success: true, message: 'Engine stopped' });
 });
 
+// Mudar modo (PAPER/LIVE)
 app.post('/api/aztron/mode', (req, res) => {
   const { mode } = req.body;
-  if (mode === 'PAPER' || mode === 'LIVE') {
-    currentMode = mode;
-    res.json({ success: true, mode });
-  } else {
-    res.status(400).json({ success: false, error: 'Invalid mode' });
-  }
+  orchestrator.setMode(mode);
+  res.json({ success: true, mode });
 });
 
-app.get('/api/trades', (req, res) => {
-  res.json({ trades: [] });
+// Mudar exchange (BINANCE/BYBIT)
+app.post('/api/aztron/exchange', (req, res) => {
+  const { exchange } = req.body;
+  orchestrator.setExchange(exchange);
+  res.json({ success: true, exchange });
 });
 
+// Listar trades
+app.get('/api/trades', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const trades = await orchestrator.db.getTrades(limit);
+  res.json({ trades: trades.data || [] });
+});
+
+// Listar sinais
+app.get('/api/signals', (req, res) => {
+  const signals = orchestrator.signal.getRecentSignals();
+  res.json({ signals });
+});
+
+// Estatísticas do portfólio
 app.get('/api/portfolio', (req, res) => {
-  res.json({ totalValueInUsdt: 1000, usdtBalance: 1000, assetBalance: 0 });
+  const portfolio = orchestrator.portfolio.getBalance();
+  res.json(portfolio);
 });
 
+// Preços atuais
 app.get('/api/prices', (req, res) => {
-  res.json({ BTCUSDT: 95000, ETHUSDT: 3500, BNBUSDT: 650 });
+  const prices = orchestrator.adapter.getAllPrices();
+  res.json(Object.fromEntries(prices));
 });
 
-app.get('/api/alerts', (req, res) => {
-  res.json({ alerts: [] });
+// Alertas
+app.get('/api/alerts', async (req, res) => {
+  const alerts = await orchestrator.db.getUnresolvedAlerts();
+  res.json({ alerts: alerts.data || [] });
 });
 
-// WebSocket
+// Resolver alerta
+app.post('/api/alerts/:id/resolve', async (req, res) => {
+  const id = parseInt(req.params.id);
+  await orchestrator.db.resolveAlert(id);
+  res.json({ success: true });
+});
+
+// WebSocket connection
 wss.on('connection', (ws) => {
   console.log('WebSocket client connected');
   ws.send(JSON.stringify({ type: 'connected' }));
